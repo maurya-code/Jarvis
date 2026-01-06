@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PHYSIC LIC CODER | ABHISHEK MAURYA</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Segoe UI', 'Courier New', monospace; }
+        
+        /* Jarvis HUD Overlay */
+        #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; filter: contrast(1.1) brightness(0.8) saturate(1.2); }
+        #three_canvas { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; }
+        #biometric_canvas { position: absolute; width: 100vw; height: 100vh; z-index: 10; transform: scaleX(-1); pointer-events: none; }
+        
+        /* Aesthetic UI Panels */
+        #ui { 
+            position: absolute; top: 30px; left: 30px; z-index: 100;
+            color: #00f0ff; font-weight: 300; letter-spacing: 2px;
+            background: rgba(0, 20, 30, 0.4); 
+            padding: 20px; border-left: 4px solid #00f0ff;
+            backdrop-filter: blur(10px); box-shadow: 0 0 20px rgba(0,240,255,0.2);
+            clip-path: polygon(0 0, 100% 0, 100% 85%, 85% 100%, 0 100%);
+        }
+
+        #brand {
+            position: absolute; bottom: 30px; right: 30px; z-index: 100;
+            text-align: right; color: #00f0ff; text-shadow: 0 0 10px #00f0ff;
+        }
+
+        .label { font-size: 10px; color: rgba(0, 240, 255, 0.6); text-transform: uppercase; }
+        .stat-val { color: #fff; font-size: 18px; font-weight: bold; font-family: 'Orbitron', sans-serif; }
+        
+        /* Aesthetic Scanning Line */
+        .scanline {
+            width: 100%; height: 2px; background: rgba(0, 240, 255, 0.3);
+            position: absolute; top: 0; z-index: 20;
+            animation: scan 4s linear infinite;
+        }
+
+        @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+
+        /* Welcome Message Animation */
+        #welcome {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00f0ff; font-size: 40px; z-index: 200; text-align: center;
+            animation: fadeOut 3s forwards 2s;
+        }
+
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; visibility: hidden; } }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="scanline"></div>
+    
+    <div id="welcome">
+        <div style="font-size: 15px;">INITIALIZING NEURAL LINK...</div>
+        WELCOME, <b>ABHISHEK MAURYA</b>
+    </div>
+
+    <div id="ui">
+        <div class="label">User Identity</div>
+        <div style="font-size: 16px; margin-bottom: 10px;">PHYSIC LIC CODER</div>
+        <div class="label">System Status</div>
+        <div id="mode" class="stat-val">SYNCING...</div>
+        <div class="label" style="margin-top:10px;">Voxel Density</div>
+        <div id="count" class="stat-val">0</div>
+    </div>
+
+    <div id="brand">
+        <div class="label">Project Code</div>
+        <div style="font-weight: bold;">VOLEX_ARCHITECT_v5.0</div>
+        <div class="label" style="font-size: 8px;">ENCRYPTED_BIO_METRIC_SENSORS</div>
+    </div>
+
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="three_canvas"></canvas>
+    <canvas id="biometric_canvas"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const bioCanvas = document.getElementById('biometric_canvas');
+        const bioCtx = bioCanvas.getContext('2d');
+        const modeEl = document.getElementById('mode');
+        const countEl = document.getElementById('count');
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('three_canvas'), antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        const voxelGroup = new THREE.Group();
+        scene.add(voxelGroup);
+        const currentSketch = new THREE.Group();
+        voxelGroup.add(currentSketch);
+
+        const gridSize = 1.2; 
+        const placedVoxels = new Map();
+        
+        const crosshair = new THREE.Mesh(
+            new THREE.BoxGeometry(gridSize, gridSize, gridSize),
+            new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.5 })
+        );
+        scene.add(crosshair);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        const sun = new THREE.DirectionalLight(0x00f0ff, 1.0);
+        sun.position.set(5, 5, 5);
+        scene.add(sun);
+        camera.position.z = 20;
+
+        let smoothedLandmarks = { Left: [], Right: [] };
+
+        function drawHUDCircle(ctx, x, y, progress, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, 45, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
+            ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
+            // Outer Ring
+            ctx.beginPath(); ctx.arc(x, y, 52, 0, Math.PI * 2); 
+            ctx.setLineDash([5, 10]); ctx.lineWidth = 1; ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function drawCyberHand(ctx, landmarks, label) {
+            if (!smoothedLandmarks[label] || smoothedLandmarks[label].length === 0) {
+                smoothedLandmarks[label] = landmarks.map(p => ({...p}));
+            } else {
+                landmarks.forEach((p, i) => {
+                    smoothedLandmarks[label][i].x += (p.x - smoothedLandmarks[label][i].x) * 0.45;
+                    smoothedLandmarks[label][i].y += (p.y - smoothedLandmarks[label][i].y) * 0.45;
+                    smoothedLandmarks[label][i].z += (p.z - smoothedLandmarks[label][i].z) * 0.1; 
+                });
+            }
+            const pts = smoothedLandmarks[label];
+            ctx.shadowBlur = 15; ctx.shadowColor = "#00f0ff";
+            ctx.beginPath(); ctx.strokeStyle = "rgba(0, 240, 255, 0.8)"; ctx.lineWidth = 1.5;
+            const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],[0,5]];
+            CONNECTIONS.forEach(([a, b]) => {
+                ctx.moveTo(pts[a].x * bioCanvas.width, pts[a].y * bioCanvas.height);
+                ctx.lineTo(pts[b].x * bioCanvas.width, pts[b].y * bioCanvas.height);
+            });
+            ctx.stroke();
+            
+            pts.forEach((pt, i) => {
+                const x = pt.x * bioCanvas.width, y = pt.y * bioCanvas.height;
+                if ([4, 8, 12, 16, 20].includes(i)) {
+                    ctx.fillStyle = "#00f0ff"; ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fill();
+                } else { ctx.fillStyle = "#fff"; ctx.fillRect(x - 1, y - 1, 2, 2); }
+            });
+        }
+
+        // Logic variables
+        let isGrabbing = false, grabTimer = 0, grabOffset = new THREE.Vector3();
+        let isBuilding = false, buildTimer = 0, isErasing = false, eraseTimer = 0;
+        let resetTimer = 0, rotateTimer = 0; 
+        let startPinchPos = null, activeAxis = null, sketchKeys = new Set();
+        
+        const GRAB_HOLD = 500, INTENT_HOLD = 500, RESET_HOLD = 1000, ROTATE_HOLD = 1000;  
+        const pinchThreshold = 0.05; 
+
+        function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)); }
+
+        function onResults(results) {
+            bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
+            crosshair.visible = false;
+            
+            if (!results.multiHandLandmarks) {
+                isGrabbing = false; isBuilding = false; isErasing = false;
+                grabTimer = 0; buildTimer = 0; eraseTimer = 0;
+                resetTimer = 0; rotateTimer = 0;
+                return;
+            }
+
+            let lHand = null, rHand = null;
+            results.multiHandedness.forEach((hand, idx) => {
+                const landmarks = results.multiHandLandmarks[idx];
+                drawCyberHand(bioCtx, landmarks, hand.label);
+                if(hand.label === 'Left') lHand = smoothedLandmarks['Left'];
+                if(hand.label === 'Right') rHand = smoothedLandmarks['Right'];
+            });
+
+            if (lHand && rHand) {
+                const lFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
+                const rFist = rHand[8].y > rHand[6].y && rHand[12].y > rHand[10].y;
+                if (lFist && rFist) {
+                    resetTimer += 16;
+                    drawHUDCircle(bioCtx, bioCanvas.width / 2, bioCanvas.height / 2, resetTimer/RESET_HOLD, "#ff0055");
+                    modeEl.innerText = "COMMAND: WIPE_ALL";
+                    if (resetTimer >= RESET_HOLD) {
+                        voxelGroup.children.forEach(c => voxelGroup.remove(c));
+                        placedVoxels.clear(); countEl.innerText = 0;
+                    }
+                    return;
+                } else { resetTimer = 0; }
+            }
+
+            if (lHand) {
+                const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
+                const handWorldPos = new THREE.Vector3((0.5 - lHand[9].x) * 25, (0.5 - lHand[9].y) * 18, 0);
+                if (isFist) {
+                    grabTimer += 16;
+                    drawHUDCircle(bioCtx, lHand[0].x * bioCanvas.width, lHand[0].y * bioCanvas.height, grabTimer/GRAB_HOLD, "#ffbb00");
+                    if (grabTimer > GRAB_HOLD) {
+                        if (!isGrabbing) { grabOffset.copy(voxelGroup.position).sub(handWorldPos); isGrabbing = true; }
+                        voxelGroup.position.copy(handWorldPos).add(grabOffset);
+                        modeEl.innerText = "LINK: LOCKED";
+                    }
+                } else { isGrabbing = false; grabTimer = 0; modeEl.innerText = "LINK: SEARCHING"; }
+            }
+
+            if (rHand) {
+                const thumbTip = rHand[4], indexTip = rHand[8];
+                const pinchingNow = getDist(thumbTip, indexTip) < pinchThreshold;
+                const worldPos = new THREE.Vector3((0.5 - indexTip.x) * 25, (0.5 - indexTip.y) * 18, -indexTip.z * 25);
+                const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                const gx = Math.round(localPos.x / gridSize) * gridSize, gy = Math.round(localPos.y / gridSize) * gridSize, gz = Math.round(localPos.z / gridSize) * gridSize;
+
+                if (pinchingNow) {
+                    buildTimer += 16;
+                    drawHUDCircle(bioCtx, indexTip.x * bioCanvas.width, indexTip.y * bioCanvas.height, buildTimer/INTENT_HOLD, "#00f0ff");
+                    if (buildTimer > INTENT_HOLD) {
+                        modeEl.innerText = "LINK: STREAK_BUILD";
+                        addSketchVoxel(gx, gy, gz);
+                        isBuilding = true;
+                    }
+                } else {
+                    if (isBuilding) commitVoxels();
+                    isBuilding = false; buildTimer = 0;
+                }
+                
+                crosshair.visible = true;
+                crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx, gy, gz)));
+            }
+        }
+
+        function addSketchVoxel(x, y, z) {
+            const key = `${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}`;
+            if (sketchKeys.has(key) || placedVoxels.has(key)) return;
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(gridSize*0.9, gridSize*0.9, gridSize*0.9), new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true }));
+            mesh.position.set(x, y, z);
+            currentSketch.add(mesh);
+            sketchKeys.add(key);
+        }
+
+        function commitVoxels() {
+            while(currentSketch.children.length > 0) {
+                const f = currentSketch.children[0];
+                const key = `${f.position.x.toFixed(1)},${f.position.y.toFixed(1)},${f.position.z.toFixed(1)}`;
+                const cube = createFinalCube(f.position.x, f.position.y, f.position.z);
+                voxelGroup.add(cube);
+                placedVoxels.set(key, cube);
+                currentSketch.remove(f);
+            }
+            countEl.innerText = placedVoxels.size;
+        }
+
+        function createFinalCube(x, y, z) {
+            const g = new THREE.BoxGeometry(gridSize*0.9, gridSize*0.9, gridSize*0.9);
+            const m = new THREE.MeshPhongMaterial({ color: 0x002233, emissive: 0x00f0ff, emissiveIntensity: 0.5, transparent: true, opacity: 0.9 });
+            const mesh = new THREE.Mesh(g, m);
+            mesh.position.set(x, y, z);
+            const edges = new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: 0x00f0ff, linewidth: 2 }));
+            mesh.add(edges);
+            return mesh;
+        }
+
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+        hands.onResults(onResults);
+        new Camera(videoElement, { onFrame: async () => { bioCanvas.width = videoElement.videoWidth; bioCanvas.height = videoElement.videoHeight; await hands.send({image: videoElement}); }, width: 1280, height: 720 }).start();
+        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+        animate();
+    </script>
+</body>
+</html>
